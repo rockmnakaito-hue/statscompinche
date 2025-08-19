@@ -46,7 +46,6 @@ def cargar_horario():
 # Función principal para generar archivo
 # =====================
 def generar_excel(horario, df_csv, dia, turno):
-    # Filtrar agentes por día y turno
     fila = horario[(horario["Día"] == dia) & (horario["Turno"] == turno)]
     if fila.empty:
         st.error("No se encontró el día o turno en el horario.")
@@ -55,22 +54,31 @@ def generar_excel(horario, df_csv, dia, turno):
     agentes_turno = [a.strip() for a in fila.iloc[0]["Nombres"].split(",") if a.strip()]
     agentes_norm = [normalizar(a) for a in agentes_turno]
 
-    # Normalizar nombres de CSV (solo First Name)
     if "First Name" not in df_csv.columns:
         st.error("El CSV debe tener la columna 'First Name'")
         return None
+
+    # Normalizar solo First Name
     df_csv["Nombre_norm"] = df_csv["First Name"].apply(normalizar)
 
-    # Filtrar solo los agentes del turno (coincidencia exacta)
+    # Filtrar solo agentes del turno
     datos = df_csv[df_csv["Nombre_norm"].isin(agentes_norm)]
 
     detectados = datos["First Name"].unique().tolist()
     no_detectados = [a for a in agentes_turno if normalizar(a) not in datos["Nombre_norm"].values]
 
-    # Mostrar preview de agentes
-    st.info(f"🟢 Agentes en turno (detectados en CSV): {', '.join(detectados) if detectados else 'Ninguno'}")
-    if no_detectados:
-        st.warning(f"⚠️ Agentes no detectados: {', '.join(no_detectados)}")
+    # Mostrar tabla de agentes
+    preview_df = pd.DataFrame({
+        "Agente": agentes_turno,
+        "Detectado en CSV": ["✅" if normalizar(a) in df_csv["Nombre_norm"].values else "❌" for a in agentes_turno]
+    })
+
+    def color_detectado(val):
+        color = 'green' if val == '✅' else 'red'
+        return f'color: {color}; font-weight: bold'
+
+    st.subheader("🕒 Estado de agentes en turno")
+    st.dataframe(preview_df.style.applymap(color_detectado, subset=["Detectado en CSV"]))
 
     # Cargar archivo base
     if not os.path.exists(ARCHIVO_BASE_PATH):
@@ -79,7 +87,6 @@ def generar_excel(horario, df_csv, dia, turno):
 
     wb = load_workbook(ARCHIVO_BASE_PATH)
 
-    # Verificar hojas
     if "Plantilla" not in wb.sheetnames or "Remoto" not in wb.sheetnames:
         st.error("El archivo base debe tener las hojas 'Plantilla' y 'Remoto'")
         return None
@@ -138,35 +145,16 @@ with col2:
 # Preview de agentes si se subió CSV
 if csv_file:
     try:
-        df_csv = pd.read_csv(csv_file, encoding="utf-8", sep="[,;]", engine="python")
-        fila = horario[(horario["Día"] == dia) & (horario["Turno"] == turno)]
-        if not fila.empty:
-            agentes_turno = [a.strip() for a in fila.iloc[0]["Nombres"].split(",") if a.strip()]
-            agentes_norm = [normalizar(a) for a in agentes_turno]
-            df_csv["Nombre_norm"] = df_csv["First Name"].apply(normalizar)
-            detectados = df_csv[df_csv["Nombre_norm"].isin(agentes_norm)]["First Name"].unique().tolist()
-            no_detectados = [a for a in agentes_turno if normalizar(a) not in df_csv["Nombre_norm"].values]
-
-            # Crear dataframe para mostrar
-            preview_df = pd.DataFrame({
-                "Agente": agentes_turno,
-                "Detectado en CSV": ["✅" if normalizar(a) in df_csv["Nombre_norm"].values else "❌" for a in agentes_turno]
-            })
-
-            # Mostrar tabla con colores
-            def color_detectado(val):
-                color = 'green' if val == '✅' else 'red'
-                return f'color: {color}; font-weight: bold'
-
-            st.subheader("🕒 Estado de agentes en turno")
-            st.dataframe(preview_df.style.applymap(color_detectado, subset=["Detectado en CSV"]))
+        df_csv = pd.read_csv(csv_file, encoding="utf-8-sig", sep=None, engine="python")
+        # Llamar a generar_excel solo para preview
+        generar_excel(horario, df_csv, dia, turno)
     except Exception as e:
         st.error(f"Error al leer CSV: {e}")
 
 # Botón para generar Excel
 if st.button("⚡ Generar Excel") and csv_file:
     try:
-        df_csv = pd.read_csv(csv_file, encoding="utf-8", sep="[,;]", engine="python")
+        df_csv = pd.read_csv(csv_file, encoding="utf-8-sig", sep=None, engine="python")
         excel_output, nombre_archivo = generar_excel(horario, df_csv, dia, turno)
         if excel_output:
             st.success("✅ Archivo generado con éxito")
