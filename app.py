@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 import os
 import datetime
 import shutil
+import csv
 
 # =====================
 # Función de normalización
@@ -27,7 +28,6 @@ HORARIO_PATH = "data/horario.xlsx"
 ARCHIVO_BASE_PATH = "data/archivo_a.xlsx"
 BACKUP_FOLDER = "data/backups"
 
-# Crear carpeta de backups si no existe
 os.makedirs(BACKUP_FOLDER, exist_ok=True)
 
 # =====================
@@ -43,29 +43,37 @@ def cargar_horario():
     return df
 
 # =====================
-# Función principal para generar archivo
+# Función para leer CSV con delimitador automático
+# =====================
+def leer_csv(csv_file):
+    content = csv_file.getvalue().decode("utf-8-sig").splitlines()
+    if not content:
+        st.error("El CSV está vacío.")
+        return None
+    dialect = csv.Sniffer().sniff(content[0])
+    csv_file.seek(0)
+    return pd.read_csv(csv_file, encoding="utf-8-sig", sep=dialect.delimiter)
+
+# =====================
+# Función principal para generar Excel
 # =====================
 def generar_excel(horario, df_csv, dia, turno):
     fila = horario[(horario["Día"] == dia) & (horario["Turno"] == turno)]
     if fila.empty:
         st.error("No se encontró el día o turno en el horario.")
-        return None
+        return None, None
 
     agentes_turno = [a.strip() for a in fila.iloc[0]["Nombres"].split(",") if a.strip()]
     agentes_norm = [normalizar(a) for a in agentes_turno]
 
     if "First Name" not in df_csv.columns:
         st.error("El CSV debe tener la columna 'First Name'")
-        return None
+        return None, None
 
-    # Normalizar solo First Name
     df_csv["Nombre_norm"] = df_csv["First Name"].apply(normalizar)
 
-    # Filtrar solo agentes del turno
-    datos = df_csv[df_csv["Nombre_norm"].isin(agentes_norm)]
-
-    detectados = datos["First Name"].unique().tolist()
-    no_detectados = [a for a in agentes_turno if normalizar(a) not in datos["Nombre_norm"].values]
+    detectados = df_csv[df_csv["Nombre_norm"].isin(agentes_norm)]["First Name"].unique().tolist()
+    no_detectados = [a for a in agentes_turno if normalizar(a) not in df_csv["Nombre_norm"].values]
 
     # Mostrar tabla de agentes
     preview_df = pd.DataFrame({
@@ -77,19 +85,19 @@ def generar_excel(horario, df_csv, dia, turno):
         color = 'green' if val == '✅' else 'red'
         return f'color: {color}; font-weight: bold'
 
-    st.subheader("🕒 Estado de agentes en turno")
+    st.subheader("🕒 Agentes en turno")
     st.dataframe(preview_df.style.applymap(color_detectado, subset=["Detectado en CSV"]))
 
     # Cargar archivo base
     if not os.path.exists(ARCHIVO_BASE_PATH):
         st.error(f"No se encontró el archivo base en: {ARCHIVO_BASE_PATH}")
-        return None
+        return None, None
 
     wb = load_workbook(ARCHIVO_BASE_PATH)
 
     if "Plantilla" not in wb.sheetnames or "Remoto" not in wb.sheetnames:
         st.error("El archivo base debe tener las hojas 'Plantilla' y 'Remoto'")
-        return None
+        return None, None
 
     ws_plantilla = wb["Plantilla"]
     ws_remoto = wb["Remoto"]
@@ -131,7 +139,6 @@ st.title("📊 Stats Generator por Turno")
 
 horario = cargar_horario()
 
-# Subir CSV LiveAgent
 st.subheader("📂 Sube el CSV exportado de LiveAgent")
 csv_file = st.file_uploader("Selecciona el archivo CSV", type=["csv"], key="liveagent")
 
@@ -145,30 +152,31 @@ with col2:
 # Preview de agentes si se subió CSV
 if csv_file:
     try:
-        df_csv = pd.read_csv(csv_file, encoding="utf-8-sig", sep=None, engine="python")
-        # Llamar a generar_excel solo para preview
-        generar_excel(horario, df_csv, dia, turno)
+        df_csv = leer_csv(csv_file)
+        if df_csv is not None:
+            generar_excel(horario, df_csv, dia, turno)
     except Exception as e:
         st.error(f"Error al leer CSV: {e}")
 
-# Botón para generar Excel
+# Botón para generar Excel final
 if st.button("⚡ Generar Excel") and csv_file:
     try:
-        df_csv = pd.read_csv(csv_file, encoding="utf-8-sig", sep=None, engine="python")
-        excel_output, nombre_archivo = generar_excel(horario, df_csv, dia, turno)
-        if excel_output:
-            st.success("✅ Archivo generado con éxito")
-            st.download_button(
-                label="📥 Descargar Excel",
-                data=excel_output,
-                file_name=nombre_archivo,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        df_csv = leer_csv(csv_file)
+        if df_csv is not None:
+            excel_output, nombre_archivo = generar_excel(horario, df_csv, dia, turno)
+            if excel_output:
+                st.success("✅ Archivo generado con éxito")
+                st.download_button(
+                    label="📥 Descargar Excel",
+                    data=excel_output,
+                    file_name=nombre_archivo,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
     except Exception as e:
         st.error(f"Error al procesar: {e}")
 
 # =====================
-# Admin: Actualizar Horario (al fondo, desplegable)
+# Admin: Actualizar Horario al fondo
 # =====================
 with st.expander("⚠️ Admin: Actualizar Horario (SOLO TOCAR DANIEL 👀)"):
     st.markdown("⚠️ Si lo toca alguien más, puedes cagar todo el bot")
@@ -178,13 +186,10 @@ with st.expander("⚠️ Admin: Actualizar Horario (SOLO TOCAR DANIEL 👀)"):
         st.warning("⚠️ Has subido un archivo nuevo. Debes confirmar para reemplazar el horario actual.")
         confirmar = st.button("✅ Confirmar actualización del horario")
         if confirmar:
-            # Crear backup del horario actual
             if os.path.exists(HORARIO_PATH):
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_path = os.path.join(BACKUP_FOLDER, f"horario_backup_{timestamp}.xlsx")
                 shutil.copy2(HORARIO_PATH, backup_path)
-            
-            # Guardar nuevo horario
             with open(HORARIO_PATH, "wb") as f:
                 f.write(nuevo_horario.getbuffer())
             st.success("✅ Horario actualizado correctamente y backup creado. Recarga la app.")
